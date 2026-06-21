@@ -46,25 +46,36 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://appuser:secret@postgres:5432/appdb
-      VECTOR_DB_URL: postgresql://vectoruser:vectorsecret@pgvector:5432/vectordb
+      VECTOR_DATABASE_URL: postgresql://vectoruser:vectorsecret@pgvector:5432/vectordb
       JWT_SECRET: changeme_in_prod
       PORT: 8000
-      OPENAI_API_KEY: your_openai_api_key_here
-      ANTHROPIC_API_KEY: your_anthropic_api_key_here
+      OPENAI_API_KEY: your_openai_api_key
+      ANTHROPIC_API_KEY: your_anthropic_api_key
+      UPLOAD_DIR: ./uploads
     volumes:
       - model_cache:/root/.cache/huggingface
     restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:8000/health || exit 1']
+      interval: 10s
+      retries: 3
 
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
     ports:
-      - '3000:3000'
+      - '3000:80'
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
     restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:3000 || exit 1']
+      interval: 10s
+      retries: 3
 
 volumes:
   postgres_data:
