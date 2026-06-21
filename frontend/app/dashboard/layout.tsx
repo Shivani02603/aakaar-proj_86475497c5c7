@@ -1,15 +1,14 @@
-import AuthGuard from '@/components/AuthGuard';
+import { ReactNode } from 'react';
+import { useAuth } from '@/providers/AuthProvider';
+import { redirect } from 'next/navigation';
 
-export default function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  return (
-    <AuthGuard>
-      <div className="min-h-screen bg-gray-50">
-        {children}
-      </div>
-    </AuthGuard>
-  );
+export default function DashboardLayout({ children }: { children: ReactNode }) {
+  const { isAuthenticated } = useAuth();
+
+  if (!isAuthenticated) {
+    redirect('/login');
+    return null;
+  }
+
+  return <div className="p-4">{children}</div>;
 }
