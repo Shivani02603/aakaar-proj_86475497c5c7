@@ -2,42 +2,43 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
 from sqlalchemy.orm import Session
 from database.models import Deployment
 from database.config import get_db
-from backend.services.auth import jwt_auth_dependency
+from backend.services.auth import get_current_user
 
 router = APIRouter(prefix="/deployment", tags=["Deployment"])
 
 # Pydantic schemas
 class DeploymentBase(BaseModel):
     name: str = Field(..., example="My Deployment")
-    description: Optional[str] = Field(None, example="Description of the deployment")
-    created_at: Optional[datetime] = Field(None, example="2023-10-01T12:00:00Z")
+    description: Optional[str] = Field(None, example="Deployment description")
+    backend_image: str = Field(..., example="backend:latest")
+    frontend_image: str = Field(..., example="frontend:latest")
+    database_image: str = Field(..., example="postgres:latest")
 
 class DeploymentCreate(DeploymentBase):
     pass
 
 class DeploymentUpdate(BaseModel):
     name: Optional[str] = Field(None, example="Updated Deployment Name")
-    description: Optional[str] = Field(None, example="Updated description")
+    description: Optional[str] = Field(None, example="Updated Deployment description")
+    backend_image: Optional[str] = Field(None, example="backend:latest")
+    frontend_image: Optional[str] = Field(None, example="frontend:latest")
+    database_image: Optional[str] = Field(None, example="postgres:latest")
 
 class DeploymentResponse(DeploymentBase):
-    id: UUID = Field(..., example="123e4567-e89b-12d3-a456-426614174000")
+    id: UUID
+    created_at: str
 
 # CRUD endpoints
 @router.post("/", response_model=DeploymentResponse, status_code=status.HTTP_201_CREATED)
-async def create_deployment(
+async def create_deployment_endpoint(
     deployment: DeploymentCreate,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(jwt_auth_dependency),
+    current_user: dict = Depends(get_current_user),
 ):
-    new_deployment = Deployment(
-        name=deployment.name,
-        description=deployment.description,
-        created_at=datetime.utcnow(),
-    )
+    new_deployment = Deployment(**deployment.dict())
     db.add(new_deployment)
     db.commit()
     db.refresh(new_deployment)
@@ -45,13 +46,16 @@ async def create_deployment(
         id=new_deployment.id,
         name=new_deployment.name,
         description=new_deployment.description,
-        created_at=new_deployment.created_at,
+        backend_image=new_deployment.backend_image,
+        frontend_image=new_deployment.frontend_image,
+        database_image=new_deployment.database_image,
+        created_at=new_deployment.created_at.isoformat(),
     )
 
 @router.get("/", response_model=List[DeploymentResponse])
-async def list_deployments(
+async def list_deployments_endpoint(
     db: Session = Depends(get_db),
-    current_user: dict = Depends(jwt_auth_dependency),
+    current_user: dict = Depends(get_current_user),
 ):
     deployments = db.query(Deployment).all()
     return [
@@ -59,16 +63,19 @@ async def list_deployments(
             id=deployment.id,
             name=deployment.name,
             description=deployment.description,
-            created_at=deployment.created_at,
+            backend_image=deployment.backend_image,
+            frontend_image=deployment.frontend_image,
+            database_image=deployment.database_image,
+            created_at=deployment.created_at.isoformat(),
         )
         for deployment in deployments
     ]
 
 @router.get("/{deployment_id}", response_model=DeploymentResponse)
-async def get_deployment(
+async def get_deployment_endpoint(
     deployment_id: UUID,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(jwt_auth_dependency),
+    current_user: dict = Depends(get_current_user),
 ):
     deployment = db.query(Deployment).filter(Deployment.id == deployment_id).first()
     if not deployment:
@@ -77,37 +84,41 @@ async def get_deployment(
         id=deployment.id,
         name=deployment.name,
         description=deployment.description,
-        created_at=deployment.created_at,
+        backend_image=deployment.backend_image,
+        frontend_image=deployment.frontend_image,
+        database_image=deployment.database_image,
+        created_at=deployment.created_at.isoformat(),
     )
 
 @router.put("/{deployment_id}", response_model=DeploymentResponse)
-async def update_deployment(
+async def update_deployment_endpoint(
     deployment_id: UUID,
     deployment_update: DeploymentUpdate,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(jwt_auth_dependency),
+    current_user: dict = Depends(get_current_user),
 ):
     deployment = db.query(Deployment).filter(Deployment.id == deployment_id).first()
     if not deployment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
-    if deployment_update.name:
-        deployment.name = deployment_update.name
-    if deployment_update.description:
-        deployment.description = deployment_update.description
+    for key, value in deployment_update.dict(exclude_unset=True).items():
+        setattr(deployment, key, value)
     db.commit()
     db.refresh(deployment)
     return DeploymentResponse(
         id=deployment.id,
         name=deployment.name,
         description=deployment.description,
-        created_at=deployment.created_at,
+        backend_image=deployment.backend_image,
+        frontend_image=deployment.frontend_image,
+        database_image=deployment.database_image,
+        created_at=deployment.created_at.isoformat(),
     )
 
 @router.delete("/{deployment_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_deployment(
+async def delete_deployment_endpoint(
     deployment_id: UUID,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(jwt_auth_dependency),
+    current_user: dict = Depends(get_current_user),
 ):
     deployment = db.query(Deployment).filter(Deployment.id == deployment_id).first()
     if not deployment:
@@ -117,37 +128,38 @@ async def delete_deployment(
     return None
 
 # Docker Compose setup endpoint
-@router.post("/setup-docker-compose", status_code=status.HTTP_200_OK)
-async def setup_docker_compose(
+@router.post("/setup", status_code=status.HTTP_200_OK)
+async def setup_docker_compose_endpoint(
     db: Session = Depends(get_db),
-    current_user: dict = Depends(jwt_auth_dependency),
+    current_user: dict = Depends(get_current_user),
 ):
-    try:
-        # Simulate Docker Compose setup logic
-        # This would typically involve writing a docker-compose.yml file and executing Docker commands
-        docker_compose_content = """
-        version: '3.8'
-        services:
-          backend:
-            image: backend:latest
-            ports:
-              - "8000:8000"
-            environment:
-              - DATABASE_URL=postgresql://user:password@db:5432/aakaar
-          frontend:
-            image: frontend:latest
-            ports:
-              - "3000:3000"
-          db:
-            image: postgres:latest
-            environment:
-              - POSTGRES_USER=user
-              - POSTGRES_PASSWORD=password
-              - POSTGRES_DB=aakaar
-            ports:
-              - "5432:5432"
-        """
-        # Normally, you'd write this to a file and execute Docker commands
-        return {"message": "Docker Compose setup completed successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    deployments = db.query(Deployment).all()
+    if not deployments:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No deployments found")
+
+    compose_file_content = {
+        "version": "3.8",
+        "services": {
+            deployment.name: {
+                "image": deployment.backend_image,
+                "ports": ["8000:8000"],
+                "environment": ["DATABASE_URL=postgres://user:password@db:5432/dbname"],
+            }
+            for deployment in deployments
+        },
+    }
+
+    # Add database service
+    compose_file_content["services"]["db"] = {
+        "image": "postgres:latest",
+        "ports": ["5432:5432"],
+        "environment": ["POSTGRES_USER=user", "POSTGRES_PASSWORD=password", "POSTGRES_DB=dbname"],
+    }
+
+    # Add frontend service
+    compose_file_content["services"]["frontend"] = {
+        "image": "frontend:latest",
+        "ports": ["3000:3000"],
+    }
+
+    return compose_file_content
