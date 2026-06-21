@@ -2,125 +2,147 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useAuth } from '@/providers/AuthProvider';
+import { getToken } from '@/lib/auth';
+import { listSessions, listFiles, aiQuery } from '@/api/client';
 import Link from 'next/link';
 
-interface StatCardProps {
-  title: string;
-  count: number;
-  link: string;
-}
-
-interface RecentItem {
+interface Session {
   id: string;
   name: string;
   createdAt: string;
 }
 
-const StatCard = ({ title, count, link }: StatCardProps) => (
-  <div className="bg-white shadow-md rounded-lg p-6 flex flex-col items-center">
-    <h3 className="text-lg font-semibold text-gray-700">{title}</h3>
-    <p className="text-2xl font-bold text-blue-600">{count}</p>
-    <Link href={link}>
-      <a className="mt-4 text-blue-500 hover:underline">View {title}</a>
-    </Link>
-  </div>
-);
+interface File {
+  id: string;
+  filename: string;
+  originalFilename: string;
+  fileSize: number;
+  createdAt: string;
+}
 
-const DashboardPage = () => {
-  const [sessionsCount, setSessionsCount] = useState<number>(0);
-  const [aiCount, setAiCount] = useState<number>(0);
-  const [recentItems, setRecentItems] = useState<RecentItem[]>([]);
+interface AiQueryResponse {
+  id: string;
+  query: string;
+  createdAt: string;
+}
+
+export default function DashboardPage() {
+  const { user } = useAuth();
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [files, setFiles] = useState<File[]>([]);
+  const [aiQueries, setAiQueries] = useState<AiQueryResponse[]>([]);
 
   useEffect(() => {
-    const fetchStats = async () => {
+    const fetchData = async () => {
       setLoading(true);
       setError(null);
 
       try {
-        const sessionsResponse = await fetch('/api/sessions');
-        const sessionsData = await sessionsResponse.json();
-        setSessionsCount(sessionsData.length);
+        const token = getToken();
+        if (!token) {
+          throw new Error('Authentication token is missing.');
+        }
 
-        const aiResponse = await fetch('/api/ai/query');
-        const aiData = await aiResponse.json();
-        setAiCount(aiData.length);
+        const [sessionsResponse, filesResponse, aiQueriesResponse] = await Promise.all([
+          listSessions(token),
+          listFiles(token),
+          aiQuery(token),
+        ]);
 
-        const recentResponse = await fetch('/api/sessions');
-        const recentData = await recentResponse.json();
-        setRecentItems(recentData.slice(0, 5)); // Fetch the first 5 recent items
+        setSessions(sessionsResponse);
+        setFiles(filesResponse);
+        setAiQueries(aiQueriesResponse);
       } catch (err) {
-        setError('Failed to load dashboard data.');
+        setError(err instanceof Error ? err.message : 'An unknown error occurred.');
       } finally {
         setLoading(false);
       }
     };
 
-    fetchStats();
+    fetchData();
   }, []);
 
+  if (loading) {
+    return <div className="flex justify-center items-center h-screen">Loading...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="flex justify-center items-center h-screen">
+        <div className="text-red-500">{error}</div>
+      </div>
+    );
+  }
+
   return (
-    <div className="p-8">
-      <h1 className="text-3xl font-bold text-gray-800 mb-6">Dashboard</h1>
+    <div className="p-6">
+      <h1 className="text-2xl font-bold mb-6">Dashboard</h1>
 
-      {error && (
-        <div className="bg-red-100 text-red-700 p-4 rounded-md mb-6">
-          {error}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
+        <div className="bg-white shadow rounded-lg p-4">
+          <h2 className="text-lg font-semibold mb-2">Sessions</h2>
+          <p className="text-2xl font-bold">{sessions.length}</p>
+          <Link href="/sessions" className="text-blue-500 hover:underline">
+            View all sessions
+          </Link>
         </div>
-      )}
 
-      {loading ? (
-        <div className="text-center text-gray-500">Loading...</div>
-      ) : (
-        <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-            <StatCard title="Sessions" count={sessionsCount} link="/sessions" />
-            <StatCard title="AI Queries" count={aiCount} link="/ai" />
-          </div>
+        <div className="bg-white shadow rounded-lg p-4">
+          <h2 className="text-lg font-semibold mb-2">Files</h2>
+          <p className="text-2xl font-bold">{files.length}</p>
+          <Link href="/files" className="text-blue-500 hover:underline">
+            View all files
+          </Link>
+        </div>
 
-          <div className="bg-white shadow-md rounded-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-700 mb-4">
-              Recent Items
-            </h2>
-            <table className="w-full border-collapse border border-gray-300">
-              <thead>
-                <tr className="bg-gray-100">
-                  <th className="border border-gray-300 px-4 py-2 text-left text-gray-600">
-                    Name
-                  </th>
-                  <th className="border border-gray-300 px-4 py-2 text-left text-gray-600">
-                    Created At
-                  </th>
-                  <th className="border border-gray-300 px-4 py-2 text-left text-gray-600">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentItems.map((item) => (
-                  <tr key={item.id}>
-                    <td className="border border-gray-300 px-4 py-2 text-gray-700">
-                      {item.name}
-                    </td>
-                    <td className="border border-gray-300 px-4 py-2 text-gray-700">
-                      {new Date(item.createdAt).toLocaleDateString()}
-                    </td>
-                    <td className="border border-gray-300 px-4 py-2 text-blue-500">
-                      <Link href={`/sessions/${item.id}`}>
-                        <a className="hover:underline">View</a>
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
+        <div className="bg-white shadow rounded-lg p-4">
+          <h2 className="text-lg font-semibold mb-2">AI Queries</h2>
+          <p className="text-2xl font-bold">{aiQueries.length}</p>
+          <Link href="/ai" className="text-blue-500 hover:underline">
+            View all AI queries
+          </Link>
+        </div>
+      </div>
+
+      <div className="bg-white shadow rounded-lg p-6">
+        <h2 className="text-lg font-semibold mb-4">Recent Items</h2>
+        <table className="w-full border-collapse border border-gray-200">
+          <thead>
+            <tr className="bg-gray-100">
+              <th className="border border-gray-200 p-2 text-left">Type</th>
+              <th className="border border-gray-200 p-2 text-left">Name</th>
+              <th className="border border-gray-200 p-2 text-left">Created At</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sessions.slice(0, 5).map((session) => (
+              <tr key={session.id}>
+                <td className="border border-gray-200 p-2">Session</td>
+                <td className="border border-gray-200 p-2">{session.name}</td>
+                <td className="border border-gray-200 p-2">{new Date(session.createdAt).toLocaleString()}</td>
+              </tr>
+            ))}
+            {files.slice(0, 5).map((file) => (
+              <tr key={file.id}>
+                <td className="border border-gray-200 p-2">File</td>
+                <td className="border border-gray-200 p-2">{file.originalFilename}</td>
+                <td className="border border-gray-200 p-2">{new Date(file.createdAt).toLocaleString()}</td>
+              </tr>
+            ))}
+            {aiQueries.slice(0, 5).map((query) => (
+              <tr key={query.id}>
+                <td className="border border-gray-200 p-2">AI Query</td>
+                <td className="border border-gray-200 p-2">{query.query}</td>
+                <td className="border border-gray-200 p-2">{new Date(query.createdAt).toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
-};
-
-export default DashboardPage;
+}
 ```
