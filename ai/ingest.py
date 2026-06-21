@@ -1,69 +1,61 @@
 import os
 import pandas as pd
-from tiktoken import encoding_for_model
+from tiktoken import Tokenizer
 from .embeddings import get_embedding
-from pgvector.psycopg2 import register_vector
+from pgvector.psycopg2 import Vector
 import psycopg2
 
-# Constants for chunking
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
-def chunk(document):
+def chunk(document: str):
     """
-    Splits a document into overlapping chunks using the 'recursive' strategy.
+    Splits the document into overlapping chunks using the recursive strategy.
     """
-    tokenizer = encoding_for_model("text-embedding-3-small")
+    tokenizer = Tokenizer()
     tokens = tokenizer.encode(document)
     chunks = []
-    for i in range(0, len(tokens), CHUNK_SIZE - CHUNK_OVERLAP):
-        chunk_tokens = tokens[i:i + CHUNK_SIZE]
+    start = 0
+    while start < len(tokens):
+        end = min(start + CHUNK_SIZE, len(tokens))
+        chunk_tokens = tokens[start:end]
         chunks.append(tokenizer.decode(chunk_tokens))
-        if len(chunk_tokens) < CHUNK_SIZE:
-            break
+        start += CHUNK_SIZE - CHUNK_OVERLAP
     return chunks
 
-def ingest_excel(file_path, session_id, user_id):
+def ingest_excel(file_path: str, session_id: str, user_id: str):
     """
-    Reads an Excel file, chunks its content, generates embeddings, and upserts into the vector store.
+    Reads an Excel file, chunks its content, embeds the chunks, and upserts into the vector store.
     """
-    # Read database connection details from environment variables
-    db_host = os.getenv("DB_HOST")
-    db_name = os.getenv("DB_NAME")
-    db_user = os.getenv("DB_USER")
-    db_password = os.getenv("DB_PASSWORD")
+    # Lazy load environment variables
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise ValueError("DATABASE_URL environment variable is not set.")
 
-    # Connect to PostgreSQL database
-    conn = psycopg2.connect(
-        host=db_host,
-        dbname=db_name,
-        user=db_user,
-        password=db_password
-    )
-    register_vector(conn)
+    # Connect to PostgreSQL with pgvector
+    conn = psycopg2.connect(db_url)
     cursor = conn.cursor()
 
-    # Read the Excel file
+    # Read Excel file
     excel_data = pd.ExcelFile(file_path)
-
     for sheet_name in excel_data.sheet_names:
         sheet_data = excel_data.parse(sheet_name)
-        for column in sheet_data.columns:
-            content = sheet_data[column].dropna().astype(str).str.cat(sep=" ")
-            chunks = chunk(content)
+        document = sheet_data.to_string(index=False)
 
-            for chunk_text in chunks:
-                embedding = get_embedding(chunk_text)
-                cursor.execute(
-                    """
-                    INSERT INTO vector_store (session_id, user_id, content, embedding)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (content) DO UPDATE
-                    SET embedding = EXCLUDED.embedding
-                    """,
-                    (session_id, user_id, chunk_text, embedding)
-                )
+        # Chunk the document
+        chunks = chunk(document)
 
+        # Embed and upsert each chunk
+        for chunk_text in chunks:
+            embedding = get_embedding(chunk_text)
+            cursor.execute("""
+                INSERT INTO document_chunks (session_id, file_id, content, embedding, metadata, chunk_index, created_at)
+                VALUES (%s, NULL, %s, %s, NULL, NULL, NOW())
+                ON CONFLICT (file_id, chunk_index)
+                DO UPDATE SET embedding = EXCLUDED.embedding, content = EXCLUDED.content;
+            """, (session_id, chunk_text, Vector(embedding)))
+
+    # Commit and close connection
     conn.commit()
     cursor.close()
     conn.close()
