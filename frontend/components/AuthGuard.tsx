@@ -2,9 +2,9 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { isAuthenticated } from '@/lib/auth';
+import { isAuthenticated } from '../lib/auth';
 
-const AuthGuard: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
   useEffect(() => {
@@ -14,6 +14,4 @@ const AuthGuard: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   }, [router]);
 
   return <>{children}</>;
-};
-
-export default AuthGuard;
+}
