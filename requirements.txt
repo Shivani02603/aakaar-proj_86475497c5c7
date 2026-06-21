@@ -99,6 +99,7 @@ sqlalchemy
 alembic
 fastapi
 pydantic
-passlib
 python-jose
+passlib
+langchain
 psycopg2-binary
