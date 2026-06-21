@@ -1,23 +1,30 @@
 install:
-	pip install -r backend/requirements.txt
-	cd frontend && npm install
+	@echo "Installing dependencies..."
+	@pip install -r backend/requirements.txt
+	@cd frontend && npm install
 
 dev:
-	./scripts/dev.sh
+	@echo "Starting development environment..."
+	@./scripts/dev.sh
 
 build:
-	docker-compose build
+	@echo "Building Docker images..."
+	@docker-compose build
 
 test:
-	pytest backend/tests
-	cd frontend && npm test
+	@echo "Running tests..."
+	@pytest backend/tests
+	@cd frontend && npm test
 
 docker-up:
-	docker-compose up -d
+	@echo "Starting Docker containers..."
+	@docker-compose up -d
 
 docker-down:
-	docker-compose down
+	@echo "Stopping Docker containers..."
+	@docker-compose down
 
 clean:
-	docker-compose down --volumes --remove-orphans
-	rm -rf backend/__pycache__ frontend/.next frontend/node_modules
+	@echo "Cleaning up..."
+	@rm -rf backend/__pycache__ frontend/.next
+	@docker-compose down --volumes --remove-orphans
