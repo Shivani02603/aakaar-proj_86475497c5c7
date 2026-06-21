@@ -1,239 +1,266 @@
+import os
 from uuid import UUID
 from typing import List, Optional
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy.exc import IntegrityError
-from datetime import datetime
-
+from sqlalchemy.exc import SQLAlchemyError
 from database.models import User, Session, UploadedFile, DocumentChunk, Message
+from sqlalchemy.orm import joinedload
 
 
 class DatabaseService:
-    async def create_user(self, email: str, db: AsyncSession) -> User:
+    @staticmethod
+    async def create_user(user: User, db: AsyncSession) -> User:
         try:
-            new_user = User(id=UUID(), email=email, created_at=datetime.utcnow())
-            db.add(new_user)
+            db.add(user)
             await db.commit()
-            await db.refresh(new_user)
-            return new_user
-        except IntegrityError:
+            await db.refresh(user)
+            return user
+        except SQLAlchemyError as e:
             await db.rollback()
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="User with this email already exists.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error creating user: {str(e)}"
             )
 
-    async def get_user_by_id(self, user_id: UUID, db: AsyncSession) -> User:
-        result = await db.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found.",
-            )
-        return user
-
-    async def list_users(self, db: AsyncSession) -> List[User]:
-        result = await db.execute(select(User))
-        users = result.scalars().all()
-        return users
-
-    async def update_user(self, user_id: UUID, email: Optional[str], db: AsyncSession) -> User:
-        user = await self.get_user_by_id(user_id, db)
-        if email:
-            user.email = email
-        user.updated_at = datetime.utcnow()
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
-        return user
-
-    async def delete_user(self, user_id: UUID, db: AsyncSession) -> None:
-        user = await self.get_user_by_id(user_id, db)
-        await db.delete(user)
-        await db.commit()
-
-    async def create_session(self, user_id: UUID, name: str, db: AsyncSession) -> Session:
+    @staticmethod
+    async def get_user_by_id(user_id: UUID, db: AsyncSession) -> User:
         try:
-            new_session = Session(id=UUID(), user_id=user_id, name=name, created_at=datetime.utcnow())
-            db.add(new_session)
+            result = await db.execute(select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found"
+                )
+            return user
+        except SQLAlchemyError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error retrieving user: {str(e)}"
+            )
+
+    @staticmethod
+    async def list_users(db: AsyncSession) -> List[User]:
+        try:
+            result = await db.execute(select(User))
+            users = result.scalars().all()
+            return users
+        except SQLAlchemyError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error listing users: {str(e)}"
+            )
+
+    @staticmethod
+    async def update_user(user_id: UUID, user_update: dict, db: AsyncSession) -> User:
+        try:
+            result = await db.execute(select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found"
+                )
+            for key, value in user_update.items():
+                setattr(user, key, value)
+            db.add(user)
             await db.commit()
-            await db.refresh(new_session)
-            return new_session
-        except IntegrityError:
+            await db.refresh(user)
+            return user
+        except SQLAlchemyError as e:
             await db.rollback()
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Session creation failed.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error updating user: {str(e)}"
             )
 
-    async def get_session_by_id(self, session_id: UUID, db: AsyncSession) -> Session:
-        result = await db.execute(select(Session).where(Session.id == session_id))
-        session = result.scalar_one_or_none()
-        if not session:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Session not found.",
-            )
-        return session
-
-    async def list_sessions(self, db: AsyncSession) -> List[Session]:
-        result = await db.execute(select(Session))
-        sessions = result.scalars().all()
-        return sessions
-
-    async def update_session(self, session_id: UUID, name: Optional[str], db: AsyncSession) -> Session:
-        session = await self.get_session_by_id(session_id, db)
-        if name:
-            session.name = name
-        session.updated_at = datetime.utcnow()
-        db.add(session)
-        await db.commit()
-        await db.refresh(session)
-        return session
-
-    async def delete_session(self, session_id: UUID, db: AsyncSession) -> None:
-        session = await self.get_session_by_id(session_id, db)
-        await db.delete(session)
-        await db.commit()
-
-    async def create_uploaded_file(
-        self, session_id: UUID, filename: str, original_filename: str, file_size: int, status: str, db: AsyncSession
-    ) -> UploadedFile:
+    @staticmethod
+    async def delete_user(user_id: UUID, db: AsyncSession) -> None:
         try:
-            new_file = UploadedFile(
-                id=UUID(),
-                session_id=session_id,
-                filename=filename,
-                original_filename=original_filename,
-                file_size=file_size,
-                status=status,
-                uploaded_at=datetime.utcnow(),
-            )
-            db.add(new_file)
+            result = await db.execute(select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found"
+                )
+            await db.delete(user)
             await db.commit()
-            await db.refresh(new_file)
-            return new_file
-        except IntegrityError:
+        except SQLAlchemyError as e:
             await db.rollback()
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="File upload failed.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error deleting user: {str(e)}"
             )
 
-    async def get_uploaded_file_by_id(self, file_id: UUID, db: AsyncSession) -> UploadedFile:
-        result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
-        file = result.scalar_one_or_none()
-        if not file:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Uploaded file not found.",
-            )
-        return file
-
-    async def list_uploaded_files(self, session_id: UUID, db: AsyncSession) -> List[UploadedFile]:
-        result = await db.execute(select(UploadedFile).where(UploadedFile.session_id == session_id))
-        files = result.scalars().all()
-        return files
-
-    async def update_uploaded_file_status(self, file_id: UUID, status: str, db: AsyncSession) -> UploadedFile:
-        file = await self.get_uploaded_file_by_id(file_id, db)
-        file.status = status
-        file.updated_at = datetime.utcnow()
-        db.add(file)
-        await db.commit()
-        await db.refresh(file)
-        return file
-
-    async def delete_uploaded_file(self, file_id: UUID, db: AsyncSession) -> None:
-        file = await self.get_uploaded_file_by_id(file_id, db)
-        await db.delete(file)
-        await db.commit()
-
-    async def create_document_chunk(
-        self, file_id: UUID, content: str, embedding: List[float], metadata: dict, chunk_index: int, db: AsyncSession
-    ) -> DocumentChunk:
+    @staticmethod
+    async def create_session(session: Session, db: AsyncSession) -> Session:
         try:
-            new_chunk = DocumentChunk(
-                id=UUID(),
-                file_id=file_id,
-                content=content,
-                embedding=embedding,
-                metadata=metadata,
-                chunk_index=chunk_index,
-                created_at=datetime.utcnow(),
-            )
-            db.add(new_chunk)
+            db.add(session)
             await db.commit()
-            await db.refresh(new_chunk)
-            return new_chunk
-        except IntegrityError:
+            await db.refresh(session)
+            return session
+        except SQLAlchemyError as e:
             await db.rollback()
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Document chunk creation failed.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error creating session: {str(e)}"
             )
 
-    async def get_document_chunk_by_id(self, chunk_id: UUID, db: AsyncSession) -> DocumentChunk:
-        result = await db.execute(select(DocumentChunk).where(DocumentChunk.id == chunk_id))
-        chunk = result.scalar_one_or_none()
-        if not chunk:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Document chunk not found.",
-            )
-        return chunk
-
-    async def list_document_chunks(self, file_id: UUID, db: AsyncSession) -> List[DocumentChunk]:
-        result = await db.execute(select(DocumentChunk).where(DocumentChunk.file_id == file_id))
-        chunks = result.scalars().all()
-        return chunks
-
-    async def delete_document_chunk(self, chunk_id: UUID, db: AsyncSession) -> None:
-        chunk = await self.get_document_chunk_by_id(chunk_id, db)
-        await db.delete(chunk)
-        await db.commit()
-
-    async def create_message(
-        self, session_id: UUID, role: str, content: str, metadata: dict, db: AsyncSession
-    ) -> Message:
+    @staticmethod
+    async def get_session_by_id(session_id: UUID, db: AsyncSession) -> Session:
         try:
-            new_message = Message(
-                id=UUID(),
-                session_id=session_id,
-                role=role,
-                content=content,
-                metadata=metadata,
-                created_at=datetime.utcnow(),
+            result = await db.execute(select(Session).where(Session.id == session_id))
+            session = result.scalar_one_or_none()
+            if not session:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Session not found"
+                )
+            return session
+        except SQLAlchemyError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error retrieving session: {str(e)}"
             )
-            db.add(new_message)
+
+    @staticmethod
+    async def list_sessions(db: AsyncSession) -> List[Session]:
+        try:
+            result = await db.execute(select(Session))
+            sessions = result.scalars().all()
+            return sessions
+        except SQLAlchemyError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error listing sessions: {str(e)}"
+            )
+
+    @staticmethod
+    async def update_session(session_id: UUID, session_update: dict, db: AsyncSession) -> Session:
+        try:
+            result = await db.execute(select(Session).where(Session.id == session_id))
+            session = result.scalar_one_or_none()
+            if not session:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Session not found"
+                )
+            for key, value in session_update.items():
+                setattr(session, key, value)
+            db.add(session)
             await db.commit()
-            await db.refresh(new_message)
-            return new_message
-        except IntegrityError:
+            await db.refresh(session)
+            return session
+        except SQLAlchemyError as e:
             await db.rollback()
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Message creation failed.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error updating session: {str(e)}"
             )
 
-    async def get_message_by_id(self, message_id: UUID, db: AsyncSession) -> Message:
-        result = await db.execute(select(Message).where(Message.id == message_id))
-        message = result.scalar_one_or_none()
-        if not message:
+    @staticmethod
+    async def delete_session(session_id: UUID, db: AsyncSession) -> None:
+        try:
+            result = await db.execute(select(Session).where(Session.id == session_id))
+            session = result.scalar_one_or_none()
+            if not session:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Session not found"
+                )
+            await db.delete(session)
+            await db.commit()
+        except SQLAlchemyError as e:
+            await db.rollback()
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Message not found.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error deleting session: {str(e)}"
             )
-        return message
 
-    async def list_messages(self, session_id: UUID, db: AsyncSession) -> List[Message]:
-        result = await db.execute(select(Message).where(Message.session_id == session_id))
-        messages = result.scalars().all()
-        return messages
+    @staticmethod
+    async def create_uploaded_file(file: UploadedFile, db: AsyncSession) -> UploadedFile:
+        try:
+            db.add(file)
+            await db.commit()
+            await db.refresh(file)
+            return file
+        except SQLAlchemyError as e:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error creating uploaded file: {str(e)}"
+            )
 
-    async def delete_message(self, message_id: UUID, db: AsyncSession) -> None:
-        message = await self.get_message_by_id(message_id, db)
-        await db.delete(message)
-        await db.commit()
+    @staticmethod
+    async def get_uploaded_file_by_id(file_id: UUID, db: AsyncSession) -> UploadedFile:
+        try:
+            result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
+            file = result.scalar_one_or_none()
+            if not file:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Uploaded file not found"
+                )
+            return file
+        except SQLAlchemyError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error retrieving uploaded file: {str(e)}"
+            )
+
+    @staticmethod
+    async def list_uploaded_files(db: AsyncSession) -> List[UploadedFile]:
+        try:
+            result = await db.execute(select(UploadedFile))
+            files = result.scalars().all()
+            return files
+        except SQLAlchemyError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error listing uploaded files: {str(e)}"
+            )
+
+    @staticmethod
+    async def update_uploaded_file(file_id: UUID, file_update: dict, db: AsyncSession) -> UploadedFile:
+        try:
+            result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
+            file = result.scalar_one_or_none()
+            if not file:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Uploaded file not found"
+                )
+            for key, value in file_update.items():
+                setattr(file, key, value)
+            db.add(file)
+            await db.commit()
+            await db.refresh(file)
+            return file
+        except SQLAlchemyError as e:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error updating uploaded file: {str(e)}"
+            )
+
+    @staticmethod
+    async def delete_uploaded_file(file_id: UUID, db: AsyncSession) -> None:
+        try:
+            result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
+            file = result.scalar_one_or_none()
+            if not file:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Uploaded file not found"
+                )
+            await db.delete(file)
+            await db.commit()
+        except SQLAlchemyError as e:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error deleting uploaded file: {str(e)}"
+            )
