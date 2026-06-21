@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List
 from ai.ingest import ingest
@@ -6,38 +6,42 @@ from ai.rag import answer
 
 router = APIRouter(prefix="/api/ai")
 
+# Request model for ingestion endpoint
 class IngestRequest(BaseModel):
-    file: UploadFile
+    file_path: str
 
+# Response model for ingestion endpoint
 class IngestResponse(BaseModel):
+    success: bool
     message: str
-    file_name: str
 
+# Request model for query endpoint
 class QueryRequest(BaseModel):
     question: str
 
+# Response model for query endpoint
 class QueryResponse(BaseModel):
     answer: str
     citations: List[str]
 
 @router.post("/ingest", response_model=IngestResponse)
-async def ingest_file(file: UploadFile = File(...)):
+async def ingest_endpoint(request: IngestRequest):
     """
-    Endpoint to handle file ingestion.
+    Endpoint to ingest an Excel file for processing.
     """
     try:
-        file_name = await ingest(file)
-        return IngestResponse(message="File ingested successfully", file_name=file_name)
+        success, message = ingest(request.file_path)
+        return IngestResponse(success=success, message=message)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/query", response_model=QueryResponse)
-async def query_ai(request: QueryRequest):
+async def query_endpoint(request: QueryRequest):
     """
-    Endpoint to handle user queries.
+    Endpoint to handle user queries and return answers with citations.
     """
     try:
-        answer_text, citations = await answer(request.question)
+        answer_text, citations = answer(request.question)
         return QueryResponse(answer=answer_text, citations=citations)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
