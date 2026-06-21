@@ -1,33 +1,34 @@
 'use client';
 
-import { createContext, useState, useEffect } from 'react';
-import { isAuthenticated, getUser } from '@/lib/auth';
+import { createContext, useContext, useState, ReactNode } from 'react';
+import { getToken, removeToken } from '@/lib/auth';
 
 interface AuthContextType {
-  isAuth: boolean;
-  user: Record<string, unknown> | null;
+  isAuthenticated: boolean;
+  logout: () => void;
 }
 
-export const AuthContext = createContext<AuthContextType>({
-  isAuth: false,
-  user: null,
-});
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [isAuth, setIsAuth] = useState(false);
-  const [user, setUser] = useState<Record<string, unknown> | null>(null);
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!!getToken());
 
-  useEffect(() => {
-    const authStatus = isAuthenticated();
-    setIsAuth(authStatus);
-    if (authStatus) {
-      setUser(getUser());
-    }
-  }, []);
+  const logout = () => {
+    removeToken();
+    setIsAuthenticated(false);
+  };
 
   return (
-    <AuthContext.Provider value={{ isAuth, user }}>
+    <AuthContext.Provider value={{ isAuthenticated, logout }}>
       {children}
     </AuthContext.Provider>
   );
+}
+
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
 }
