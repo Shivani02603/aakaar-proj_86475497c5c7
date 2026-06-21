@@ -5,6 +5,11 @@ import { AuthProvider } from '@/providers/AuthProvider';
 
 const inter = Inter({ subsets: ['latin'] });
 
+export const metadata = {
+  title: 'Aakaar Project',
+  description: 'AI-powered web application',
+};
+
 export default function RootLayout({
   children,
 }: {
