@@ -5,76 +5,67 @@ from typing import List, Dict, Any
 
 def get_pg_connection():
     """
-    Lazily initializes and returns a PostgreSQL connection using environment variables.
+    Lazily initialize and return a PostgreSQL connection.
     """
-    db_host = os.getenv("PG_HOST")
-    db_port = os.getenv("PG_PORT", "5432")
-    db_name = os.getenv("PG_DATABASE")
-    db_user = os.getenv("PG_USER")
-    db_password = os.getenv("PG_PASSWORD")
-
-    if not all([db_host, db_name, db_user, db_password]):
-        raise ValueError("One or more PostgreSQL environment variables are not set.")
-
-    return psycopg2.connect(
-        host=db_host,
-        port=db_port,
-        dbname=db_name,
-        user=db_user,
-        password=db_password
-    )
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise ValueError("DATABASE_URL environment variable is not set.")
+    return psycopg2.connect(db_url)
 
 def upsert(id: str, vector: List[float], metadata: Dict[str, Any]):
     """
-    Upserts a vector and its metadata into the pgvector table.
+    Upsert a vector and its metadata into the pgvector table.
     """
-    connection = get_pg_connection()
+    conn = get_pg_connection()
     try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS vectors (
+                    id TEXT PRIMARY KEY,
+                    embedding VECTOR(%s),
+                    metadata JSONB
+                );
+            """, (len(vector),))
+            cur.execute("""
                 INSERT INTO vectors (id, embedding, metadata)
                 VALUES (%s, %s, %s)
                 ON CONFLICT (id) DO UPDATE
                 SET embedding = EXCLUDED.embedding,
                     metadata = EXCLUDED.metadata;
             """, (id, vector, Json(metadata)))
-        connection.commit()
+        conn.commit()
     finally:
-        connection.close()
+        conn.close()
 
 def search(query_embedding: List[float], top_k: int, **filters) -> List[Dict[str, Any]]:
     """
-    Searches for the top_k most similar vectors to the query_embedding in the pgvector table.
+    Search for the top_k most similar vectors to the query_embedding.
     """
-    connection = get_pg_connection()
+    conn = get_pg_connection()
     try:
-        with connection.cursor() as cursor:
+        with conn.cursor() as cur:
             filter_conditions = []
             filter_values = []
             for key, value in filters.items():
                 filter_conditions.append(f"metadata->>%s = %s")
                 filter_values.extend([key, value])
-            filter_query = " AND ".join(filter_conditions)
-
+            filter_clause = " AND ".join(filter_conditions)
+            if filter_clause:
+                filter_clause = f"WHERE {filter_clause}"
+            
             query = f"""
                 SELECT id, embedding, metadata, 1 - (embedding <=> %s) AS similarity
                 FROM vectors
-                {"WHERE " + filter_query if filter_query else ""}
+                {filter_clause}
                 ORDER BY embedding <=> %s
                 LIMIT %s;
             """
-            cursor.execute(query, [query_embedding, query_embedding, top_k] + filter_values)
-            results = cursor.fetchall()
-
-        matches = [
-            {
-                "id": row[0],
-                "embedding": row[1],
-                "metadata": row[2],
-                "similarity": row[3]
-            }
-            for row in results
-        ]
+            cur.execute(query, [query_embedding, query_embedding, top_k] + filter_values)
+            results = cur.fetchall()
+            matches = [
+                {"id": row[0], "embedding": row[1], "metadata": row[2], "similarity": row[3]}
+                for row in results
+            ]
         return matches
     finally:
-        connection.close()
+        conn.close()
