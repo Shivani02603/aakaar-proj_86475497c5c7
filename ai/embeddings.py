@@ -12,8 +12,8 @@ def embed_text(text: str) -> List[float]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY environment variable is not set.")
+    
     openai.api_key = api_key
-
     response = openai.Embedding.create(
         model=EMBEDDING_MODEL,
         input=text
@@ -30,8 +30,8 @@ def embed_batch(texts: List[str]) -> List[List[float]]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY environment variable is not set.")
+    
     openai.api_key = api_key
-
     response = openai.Embedding.create(
         model=EMBEDDING_MODEL,
         input=texts
