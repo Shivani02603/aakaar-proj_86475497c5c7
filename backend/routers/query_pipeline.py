@@ -1,130 +1,118 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any
+from typing import List, Optional
 from uuid import UUID
 from sqlalchemy.orm import Session
-from database.models import DocumentChunk, UploadedFile, Message
+from database.models import DocumentChunk, Message, UploadedFile, Session as DBSession
 from database.config import get_db
 from backend.services.auth import get_current_user
-from backend.routers.query_pipeline import embed_query, retrieve_top_chunks, build_prompt_context, call_llm
+from ai.rag import embed_query, retrieve_context, answer_question
+from datetime import datetime
 
 router = APIRouter(prefix="/query_pipeline", tags=["Query Pipeline"])
 
+# Pydantic models for request and response
 class QueryRequest(BaseModel):
-    query: str = Field(..., description="The user's question or query.")
-    session_id: UUID = Field(..., description="The session ID associated with the query.")
-    top_k: int = Field(5, description="Number of top chunks to retrieve based on similarity.")
+    query: str = Field(..., description="User's question")
+    session_id: UUID = Field(..., description="Session ID associated with the query")
+    top_k: int = Field(5, description="Number of top chunks to retrieve")
 
 class QueryResponse(BaseModel):
-    answer: str = Field(..., description="The generated answer to the user's query.")
-    citations: List[Dict[str, Any]] = Field(..., description="List of source citations for the answer.")
+    answer: str = Field(..., description="Generated answer from the AI model")
+    citations: List[dict] = Field(..., description="Source citations for the answer")
 
+class MessageResponse(BaseModel):
+    id: UUID
+    session_id: UUID
+    role: str
+    content: str
+    metadata: Optional[dict]
+    created_at: datetime
+
+# Endpoint to handle AI query
 @router.post("/query", response_model=QueryResponse)
-async def query_pipeline(request: QueryRequest, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
-    """
-    Handles user queries by embedding the query, retrieving relevant chunks, and generating an answer using an LLM.
-    """
-    # Step 1: Embed the query
+async def query_pipeline(
+    request: QueryRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
     try:
+        # Validate session ownership
+        session = db.query(DBSession).filter(DBSession.id == request.session_id).first()
+        if not session or session.user_id != current_user["id"]:
+            raise HTTPException(status_code=403, detail="Unauthorized access to session")
+
+        # Embed the query
         query_embedding = embed_query(request.query)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to embed query: {str(e)}")
 
-    # Step 2: Retrieve top chunks based on cosine similarity
-    try:
-        top_chunks = retrieve_top_chunks(query_embedding, request.top_k, db)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve top chunks: {str(e)}")
+        # Retrieve top chunks by cosine similarity
+        top_chunks = retrieve_context(query_embedding, request.top_k, request.session_id, current_user["id"])
+        if not top_chunks:
+            raise HTTPException(status_code=404, detail="No relevant context found")
 
-    # Step 3: Build context for the LLM
-    try:
-        context = build_prompt_context(top_chunks)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to build prompt context: {str(e)}")
+        # Build context for the AI model
+        context = "\n".join([chunk["content"] for chunk in top_chunks])
 
-    # Step 4: Call the LLM to generate an answer
-    try:
-        messages = [{"role": "user", "content": request.query}, {"role": "system", "content": context}]
-        answer = call_llm(messages, stream=False)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate answer: {str(e)}")
+        # Call the AI model to generate an answer
+        answer_data = answer_question(request.query, context, current_user["id"])
+        if not answer_data or "answer" not in answer_data or "citations" not in answer_data:
+            raise HTTPException(status_code=500, detail="Failed to generate an answer")
 
-    # Step 5: Prepare citations
-    citations = []
-    for chunk in top_chunks:
-        citations.append({
-            "filename": chunk.metadata.get("filename"),
-            "row_range": chunk.metadata.get("row_range"),
-        })
-
-    # Step 6: Return the response
-    return QueryResponse(answer=answer, citations=citations)
-
-@router.get("/chunks", response_model=List[DocumentChunk])
-async def list_chunks(file_id: UUID, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
-    """
-    Lists all chunks associated with a specific file.
-    """
-    try:
-        chunks = db.query(DocumentChunk).filter(DocumentChunk.file_id == file_id).all()
-        return chunks
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list chunks: {str(e)}")
-
-@router.get("/chunks/{chunk_id}", response_model=DocumentChunk)
-async def get_chunk(chunk_id: UUID, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
-    """
-    Retrieves a specific chunk by its ID.
-    """
-    try:
-        chunk = db.query(DocumentChunk).filter(DocumentChunk.id == chunk_id).first()
-        if not chunk:
-            raise HTTPException(status_code=404, detail="Chunk not found.")
-        return chunk
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve chunk: {str(e)}")
-
-@router.post("/chunks", response_model=DocumentChunk)
-async def create_chunk(chunk: DocumentChunk, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
-    """
-    Creates a new chunk in the database.
-    """
-    try:
-        db.add(chunk)
+        # Save user query and AI response to the database
+        user_message = Message(
+            id=UUID(),
+            session_id=request.session_id,
+            role="user",
+            content=request.query,
+            metadata=None,
+            created_at=datetime.utcnow(),
+        )
+        assistant_message = Message(
+            id=UUID(),
+            session_id=request.session_id,
+            role="assistant",
+            content=answer_data["answer"],
+            metadata={"citations": answer_data["citations"]},
+            created_at=datetime.utcnow(),
+        )
+        db.add(user_message)
+        db.add(assistant_message)
         db.commit()
-        db.refresh(chunk)
-        return chunk
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create chunk: {str(e)}")
 
-@router.put("/chunks/{chunk_id}", response_model=DocumentChunk)
-async def update_chunk(chunk_id: UUID, chunk_update: DocumentChunk, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
-    """
-    Updates an existing chunk in the database.
-    """
-    try:
-        chunk = db.query(DocumentChunk).filter(DocumentChunk.id == chunk_id).first()
-        if not chunk:
-            raise HTTPException(status_code=404, detail="Chunk not found.")
-        for key, value in chunk_update.dict().items():
-            setattr(chunk, key, value)
-        db.commit()
-        db.refresh(chunk)
-        return chunk
+        # Return the response
+        return QueryResponse(answer=answer_data["answer"], citations=answer_data["citations"])
+    except HTTPException as e:
+        raise e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update chunk: {str(e)}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred")
 
-@router.delete("/chunks/{chunk_id}")
-async def delete_chunk(chunk_id: UUID, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)):
-    """
-    Deletes a chunk from the database.
-    """
+# Endpoint to list all messages in a session
+@router.get("/{session_id}/messages", response_model=List[MessageResponse])
+async def get_messages(
+    session_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
     try:
-        chunk = db.query(DocumentChunk).filter(DocumentChunk.id == chunk_id).first()
-        if not chunk:
-            raise HTTPException(status_code=404, detail="Chunk not found.")
-        db.delete(chunk)
-        db.commit()
-        return {"detail": "Chunk deleted successfully."}
+        # Validate session ownership
+        session = db.query(DBSession).filter(DBSession.id == session_id).first()
+        if not session or session.user_id != current_user["id"]:
+            raise HTTPException(status_code=403, detail="Unauthorized access to session")
+
+        # Retrieve messages
+        messages = db.query(Message).filter(Message.session_id == session_id).order_by(Message.created_at.asc()).all()
+        return [
+            MessageResponse(
+                id=message.id,
+                session_id=message.session_id,
+                role=message.role,
+                content=message.content,
+                metadata=message.metadata,
+                created_at=message.created_at,
+            )
+            for message in messages
+        ]
+    except HTTPException as e:
+        raise e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete chunk: {str(e)}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred")
