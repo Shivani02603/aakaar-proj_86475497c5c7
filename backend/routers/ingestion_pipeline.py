@@ -2,160 +2,138 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
 from sqlalchemy.orm import Session
 from database.models import DocumentChunk, UploadedFile
 from database.config import get_db
-from backend.services.auth import jwt_auth_dependency
-from backend.routers.ingestion_pipeline import chunk_text
+from backend.services.auth import get_current_user
 from ai.embeddings import embed_batch
-from ai.vector_store import upsert
-import pandas as pd
+from ai.ingest import chunk
+from datetime import datetime
 import os
-import tempfile
+import pandas as pd
 
 router = APIRouter(prefix="/ingestion_pipeline", tags=["Ingestion Pipeline"])
 
 # Pydantic schemas
-class ChunkRequest(BaseModel):
+class DocumentChunkBase(BaseModel):
     file_id: UUID
     content: str
-    chunk_index: int
     metadata: Optional[dict] = None
-
-class ChunkResponse(BaseModel):
-    id: UUID
-    file_id: UUID
-    content: str
-    embedding: List[float]
-    metadata: Optional[dict]
     chunk_index: int
+
+class DocumentChunkCreate(DocumentChunkBase):
+    pass
+
+class DocumentChunkResponse(DocumentChunkBase):
+    id: UUID
     created_at: datetime
 
-class FileUploadRequest(BaseModel):
+class IngestRequest(BaseModel):
     session_id: UUID
-    filename: str
-    original_filename: str
-    file_size: int
-    status: str
+    file: UploadFile
 
-class FileUploadResponse(BaseModel):
-    id: UUID
-    session_id: UUID
-    filename: str
-    original_filename: str
-    file_size: int
-    status: str
-    uploaded_at: datetime
+class IngestResponse(BaseModel):
+    message: str
+    chunks_created: int
 
 # Helper functions
 def parse_excel(file_path: str) -> List[str]:
     try:
         df = pd.read_excel(file_path)
-        return df.to_string(index=False).splitlines()
+        content = df.to_string(index=False)
+        return [content]
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error parsing Excel file: {str(e)}")
 
-def store_chunks(chunks: List[dict], db: Session):
-    for chunk in chunks:
-        db_chunk = DocumentChunk(**chunk)
-        db.add(db_chunk)
-    db.commit()
+def store_chunks(chunks: List[DocumentChunkCreate], db: Session):
+    try:
+        for chunk_data in chunks:
+            chunk = DocumentChunk(**chunk_data.dict())
+            db.add(chunk)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error storing chunks: {str(e)}")
 
 # Routes
-@router.post("/upload", response_model=FileUploadResponse)
-async def upload_file(
-    session_id: UUID = Form(...),
+@router.post("/ingest", response_model=IngestResponse)
+async def ingest_documents(
+    session_id: UUID,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    current_user: dict = Depends(jwt_auth_dependency),
+    current_user: dict = Depends(get_current_user),
 ):
+    # Validate session ownership
+    session = db.query(UploadedFile).filter(UploadedFile.session_id == session_id).first()
+    if not session or session.user_id != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Unauthorized access to session.")
+
+    # Save file to disk
+    upload_dir = os.getenv("UPLOAD_DIRECTORY", "/tmp/uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    file_path = os.path.join(upload_dir, file.filename)
+    with open(file_path, "wb") as f:
+        f.write(file.file.read())
+
+    # Parse Excel file
     try:
-        # Save file temporarily
-        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-            tmp_file.write(file.file.read())
-            tmp_file_path = tmp_file.name
+        parsed_content = parse_excel(file_path)
+    except HTTPException as e:
+        raise e
 
-        # Parse Excel file
-        parsed_content = parse_excel(tmp_file_path)
-
-        # Chunk content
-        chunks = chunk_text(parsed_content, chunk_size=1000, overlap=200)
-
-        # Embed chunks
-        embeddings = embed_batch([chunk["content"] for chunk in chunks])
-
-        # Store chunks in DB
-        for i, chunk in enumerate(chunks):
-            chunk["embedding"] = embeddings[i]
-            chunk["file_id"] = session_id
-            chunk["created_at"] = datetime.utcnow()
-        store_chunks(chunks, db)
-
-        # Store file metadata in DB
-        uploaded_file = UploadedFile(
-            session_id=session_id,
-            filename=file.filename,
-            original_filename=file.filename,
-            file_size=len(file.file.read()),
-            status="processed",
-            uploaded_at=datetime.utcnow(),
-        )
-        db.add(uploaded_file)
-        db.commit()
-
-        return FileUploadResponse(
-            id=uploaded_file.id,
-            session_id=uploaded_file.session_id,
-            filename=uploaded_file.filename,
-            original_filename=uploaded_file.original_filename,
-            file_size=uploaded_file.file_size,
-            status=uploaded_file.status,
-            uploaded_at=uploaded_file.uploaded_at,
-        )
+    # Chunk content
+    try:
+        chunks = chunk(parsed_content, chunk_size=1000, overlap=200)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
-    finally:
-        # Clean up temporary file
-        if os.path.exists(tmp_file_path):
-            os.remove(tmp_file_path)
+        raise HTTPException(status_code=500, detail=f"Error chunking content: {str(e)}")
 
-@router.get("/chunks/{file_id}", response_model=List[ChunkResponse])
-async def list_chunks(file_id: UUID, db: Session = Depends(get_db)):
-    chunks = db.query(DocumentChunk).filter(DocumentChunk.file_id == file_id).all()
-    return [
-        ChunkResponse(
-            id=chunk.id,
-            file_id=chunk.file_id,
-            content=chunk.content,
-            embedding=chunk.embedding,
-            metadata=chunk.metadata,
-            chunk_index=chunk.chunk_index,
-            created_at=chunk.created_at,
-        )
-        for chunk in chunks
-    ]
+    # Embed chunks
+    try:
+        embeddings = embed_batch([chunk.content for chunk in chunks])
+        for i, embedding in enumerate(embeddings):
+            chunks[i].embedding = embedding
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error embedding chunks: {str(e)}")
 
-@router.get("/chunks/{chunk_id}", response_model=ChunkResponse)
-async def get_chunk(chunk_id: UUID, db: Session = Depends(get_db)):
+    # Store chunks in database
+    try:
+        store_chunks(chunks, db)
+    except HTTPException as e:
+        raise e
+
+    return IngestResponse(message="Document ingestion successful.", chunks_created=len(chunks))
+
+@router.get("/chunks", response_model=List[DocumentChunkResponse])
+def list_chunks(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    chunks = db.query(DocumentChunk).all()
+    return [DocumentChunkResponse(**chunk.__dict__) for chunk in chunks]
+
+@router.get("/chunks/{chunk_id}", response_model=DocumentChunkResponse)
+def get_chunk(chunk_id: UUID, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     chunk = db.query(DocumentChunk).filter(DocumentChunk.id == chunk_id).first()
     if not chunk:
-        raise HTTPException(status_code=404, detail="Chunk not found")
-    return ChunkResponse(
-        id=chunk.id,
-        file_id=chunk.file_id,
-        content=chunk.content,
-        embedding=chunk.embedding,
-        metadata=chunk.metadata,
-        chunk_index=chunk.chunk_index,
-        created_at=chunk.created_at,
-    )
+        raise HTTPException(status_code=404, detail="Chunk not found.")
+    return DocumentChunkResponse(**chunk.__dict__)
 
-@router.delete("/chunks/{chunk_id}")
-async def delete_chunk(chunk_id: UUID, db: Session = Depends(get_db)):
+@router.put("/chunks/{chunk_id}", response_model=DocumentChunkResponse)
+def update_chunk(
+    chunk_id: UUID,
+    chunk_update: DocumentChunkCreate,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
     chunk = db.query(DocumentChunk).filter(DocumentChunk.id == chunk_id).first()
     if not chunk:
-        raise HTTPException(status_code=404, detail="Chunk not found")
+        raise HTTPException(status_code=404, detail="Chunk not found.")
+    for key, value in chunk_update.dict().items():
+        setattr(chunk, key, value)
+    db.commit()
+    return DocumentChunkResponse(**chunk.__dict__)
+
+@router.delete("/chunks/{chunk_id}", status_code=204)
+def delete_chunk(chunk_id: UUID, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    chunk = db.query(DocumentChunk).filter(DocumentChunk.id == chunk_id).first()
+    if not chunk:
+        raise HTTPException(status_code=404, detail="Chunk not found.")
     db.delete(chunk)
     db.commit()
-    return {"detail": "Chunk deleted successfully"}
