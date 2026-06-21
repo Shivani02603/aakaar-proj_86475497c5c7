@@ -3,14 +3,14 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-const LoginPage = () => {
+export default function LoginPage() {
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
@@ -32,21 +32,25 @@ const LoginPage = () => {
       const { token } = await response.json();
       localStorage.setItem('token', token);
       router.push('/dashboard');
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'An unknown error occurred');
+    } catch (err) {
+      setError(err.message);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="flex justify-center items-center h-screen bg-gray-100">
+    <div className="flex items-center justify-center min-h-screen bg-gray-100">
       <form
         onSubmit={handleSubmit}
-        className="bg-white p-6 rounded shadow-md w-full max-w-md"
+        className="w-full max-w-md p-6 bg-white rounded shadow-md"
       >
-        <h1 className="text-xl font-bold mb-4">Login</h1>
-        {error && <p className="text-red-500 mb-4">{error}</p>}
+        <h1 className="text-2xl font-bold mb-4">Login</h1>
+        {error && (
+          <div className="mb-4 text-red-500">
+            {error}
+          </div>
+        )}
         <div className="mb-4">
           <label htmlFor="email" className="block text-sm font-medium text-gray-700">
             Email
@@ -56,7 +60,7 @@ const LoginPage = () => {
             id="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+            className="w-full px-3 py-2 border rounded focus:outline-none focus:ring focus:ring-blue-300"
             required
           />
         </div>
@@ -69,15 +73,13 @@ const LoginPage = () => {
             id="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+            className="w-full px-3 py-2 border rounded focus:outline-none focus:ring focus:ring-blue-300"
             required
           />
         </div>
         <button
           type="submit"
-          className={`w-full py-2 px-4 text-white bg-indigo-600 rounded-md shadow-sm ${
-            loading ? 'opacity-50 cursor-not-allowed' : ''
-          }`}
+          className="w-full px-4 py-2 text-white bg-blue-500 rounded hover:bg-blue-600 focus:outline-none focus:ring focus:ring-blue-300"
           disabled={loading}
         >
           {loading ? 'Logging in...' : 'Login'}
@@ -85,6 +87,4 @@ const LoginPage = () => {
       </form>
     </div>
   );
-};
-
-export default LoginPage;
+}
