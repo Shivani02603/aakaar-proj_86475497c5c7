@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: appdb
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U appuser']
+      interval: 5s
+      retries: 5
+
+  pgvector:
+    image: ankane/pgvector:latest
+    restart: unless-stopped
+    ports:
+      - '5433:5432'
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: vectoruser
+      POSTGRES_PASSWORD: vectorsecret
+      POSTGRES_DB: vectordb
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vectoruser']
+      interval: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - '8000:8000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pgvector:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://appuser:secret@postgres:5432/appdb
+      VECTOR_DB_URL: postgresql://vectoruser:vectorsecret@pgvector:5432/vectordb
+      JWT_SECRET: changeme_in_prod
+      PORT: 8000
+      OPENAI_API_KEY: your_openai_api_key_here
+      ANTHROPIC_API_KEY: your_anthropic_api_key_here
+    volumes:
+      - model_cache:/root/.cache/huggingface
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - '3000:3000'
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  pgvector_data:
+  model_cache:
